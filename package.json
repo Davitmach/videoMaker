@@ -1,0 +1,11 @@
+{
+  "type": "module",
+  "dependencies": {
+    "@runwayml/sdk": "^2.4.0",
+    "axios": "^1.10.0",
+    "dotenv": "^16.5.0",
+    "form-data": "^4.0.3",
+    "fs": "^0.0.1-security",
+    "telegraf": "^4.16.3"
+  }
+}
