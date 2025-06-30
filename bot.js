@@ -121,11 +121,15 @@ async function generateVideo(imagePath, prompt, ratio) {
 
   const task = await runway.imageToVideo
     .create({
-      model: "gen4_turbo",
+      model: "gen4",
       promptImage: dataUri,
       promptText: prompt,
       ratio,
       duration: 5,
+       stylePreset: "cinematic",
+      cameraMotion: "parallax",
+      motion: 4,
+      seed: 42,
     })
     .waitForTaskOutput();
 
