@@ -4,7 +4,6 @@ import axios from "axios";
 import fs from "fs";
 import path from "path";
 import sharp from "sharp";
-import { imageSize } from "image-size";  // Правильный импорт!
 import dotenv from "dotenv";
 
 dotenv.config();
@@ -44,7 +43,7 @@ bot.on("photo", async (ctx) => {
   try {
     await downloadFile(fileLink.href, originalPath);
     await resizeImage(originalPath, resizedPath);
-    const ratio = getAutoRatio(resizedPath);
+    const ratio = await getAutoRatio(resizedPath);
 
     await ctx.reply("Генерирую видео, подожди немного…");
 
@@ -66,11 +65,15 @@ bot.on("photo", async (ctx) => {
   }
 });
 
-function getAutoRatio(imagePath) {
-  const { width, height } = imageSize(imagePath);
+// Получаем размеры фото через sharp
+async function getAutoRatio(imagePath) {
+  const metadata = await sharp(imagePath).metadata();
+  const width = metadata.width || 0;
+  const height = metadata.height || 0;
   return width > height ? "1280:768" : "768:1280";
 }
 
+// Скачиваем файл потоком через axios
 async function downloadFile(url, dest) {
   const response = await axios.get(url, { responseType: "stream" });
   const writer = fs.createWriteStream(dest);
@@ -81,6 +84,7 @@ async function downloadFile(url, dest) {
   });
 }
 
+// Сжимаем фото до 1024 ширины
 async function resizeImage(inputPath, outputPath) {
   return sharp(inputPath)
     .resize({ width: 1024 })
@@ -88,12 +92,14 @@ async function resizeImage(inputPath, outputPath) {
     .toFile(outputPath);
 }
 
+// Кодируем файл в Data URI
 function makeDataURI(filePath) {
   const mime = "image/jpeg";
   const b64 = fs.readFileSync(filePath).toString("base64");
   return `data:${mime};base64,${b64}`;
 }
 
+// Генерируем видео через Runway
 async function generateVideo(imagePath, prompt, ratio) {
   const dataUri = makeDataURI(imagePath);
 
