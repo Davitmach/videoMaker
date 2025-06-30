@@ -94,11 +94,18 @@ function makeDataURI(filePath) {
   const b64 = fs.readFileSync(filePath).toString("base64");
   return `data:${mime};base64,${b64}`;
 }
+const DOMAIN = 'https://videomaker-pwn2.onrender.com'; 
+const TOKEN = '8049374841:AAE88n9H8oa4X0phtItDDM1OXEysFxKfOuA'; 
 
 // ---------------------------------------------------------------------------
 console.log("🤖 Бот запущен! Нажми Ctrl-C для остановки.");
-bot.launch();
-
+bot.launch({
+  webhook: {
+    domain: DOMAIN,
+    port:  3000, 
+    hookPath: `/${TOKEN}`
+  }
+});
 // Корректное выключение
 process.once("SIGINT", () => bot.stop("SIGINT"));
 process.once("SIGTERM", () => bot.stop("SIGTERM"));
