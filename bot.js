@@ -3,7 +3,7 @@ import RunwayML, { TaskFailedError, APIError } from "@runwayml/sdk";
 import axios from "axios";
 import fs from "fs";
 import path from "path";
-import sharp from "sharp";
+import sizeOf from "image-size";
 import dotenv from "dotenv";
 
 dotenv.config();
@@ -37,43 +37,55 @@ bot.on("photo", async (ctx) => {
 
   const photo = ctx.message.photo.pop();
   const fileLink = await ctx.telegram.getFileLink(photo.file_id);
-  const originalPath = path.join(TMP_DIR, `${photo.file_id}_orig.jpg`);
-  const resizedPath = path.join(TMP_DIR, `${photo.file_id}_resized.jpg`);
+  const filePath = path.join(TMP_DIR, `${photo.file_id}.jpg`);
 
   try {
-    await downloadFile(fileLink.href, originalPath);
-    await resizeImage(originalPath, resizedPath);
-    const ratio = await getAutoRatio(resizedPath);
+    await downloadFile(fileLink.href, filePath);
+
+    // Проверяем размеры фото и выдаём предупреждение, если слишком маленькое или соотношение не подходит
+    let dimensions;
+    try {
+      dimensions = sizeOf(filePath);
+    } catch (e) {
+      await ctx.reply("⚠️ Не удалось определить размер фотографии. Попробуй другое фото.");
+      throw e;
+    }
+
+    const { width, height } = dimensions;
+    if (width < 200 || height < 200) {
+      await ctx.reply("⚠️ Фото слишком маленькое, нужно побольше.");
+      throw new Error("Фото слишком маленькое");
+    }
+
+    const ratioStr = width > height ? "1280:768" : "768:1280";
 
     await ctx.reply("Генерирую видео, подожди немного…");
 
-    const videoUrl = await generateVideo(resizedPath, prompt, ratio);
+    const videoUrl = await generateVideo(filePath, prompt, ratioStr);
     await ctx.replyWithVideo({ url: videoUrl });
   } catch (err) {
-    console.error("❌ Ошибка:", err);
+    console.error(err);
 
-    if (err.message?.includes("Runway не смог")) {
-      await ctx.reply("⚠️ Runway не смог сгенерировать видео. Попробуй другое описание или фото.");
+    if (err instanceof TaskFailedError) {
+      const details = err.taskDetails;
+      if (details.failureCode === "INTERNAL.BAD_OUTPUT.CODE01") {
+        await ctx.reply("⚠️ Runway не смог сгенерировать видео по этому фото и описанию. Попробуй изменить описание или фото.");
+      } else {
+        await ctx.reply(`⚠️ Ошибка генерации видео: ${details.failure || "неизвестная ошибка"}`);
+      }
     } else if (err instanceof APIError && err.body?.error?.includes("ratio")) {
-      await ctx.reply("⚠️ Неподдерживаемое разрешение. Отправь фото другого размера.");
+      await ctx.reply("⚠️ Неподдерживаемое соотношение сторон у фото. Отправь фото с другим размером.");
+    } else if (err.message === "Фото слишком маленькое") {
+      // Уже отправили предупреждение, ничего делать не нужно
     } else {
       await ctx.reply("Произошла ошибка при генерации видео 😔");
     }
   } finally {
-    [originalPath, resizedPath].forEach((p) => fs.existsSync(p) && fs.unlinkSync(p));
+    if (fs.existsSync(filePath)) fs.unlinkSync(filePath);
     userPrompts.delete(ctx.chat.id);
   }
 });
 
-// Получаем размеры фото через sharp
-async function getAutoRatio(imagePath) {
-  const metadata = await sharp(imagePath).metadata();
-  const width = metadata.width || 0;
-  const height = metadata.height || 0;
-  return width > height ? "1280:768" : "768:1280";
-}
-
-// Скачиваем файл потоком через axios
 async function downloadFile(url, dest) {
   const response = await axios.get(url, { responseType: "stream" });
   const writer = fs.createWriteStream(dest);
@@ -84,51 +96,26 @@ async function downloadFile(url, dest) {
   });
 }
 
-// Сжимаем фото до 1024 ширины
-async function resizeImage(inputPath, outputPath) {
-  return sharp(inputPath)
-    .resize({ width: 1024 })
-    .jpeg({ quality: 80 })
-    .toFile(outputPath);
+async function generateVideo(imagePath, prompt, ratio) {
+  const dataUri = makeDataURI(imagePath);
+
+  const task = await runway.imageToVideo
+    .create({
+      model: "gen4_turbo",
+      promptImage: dataUri,
+      promptText: prompt,
+      ratio,
+      duration: 5,
+    })
+    .waitForTaskOutput();
+
+  return task.output[0];
 }
 
-// Кодируем файл в Data URI
 function makeDataURI(filePath) {
   const mime = "image/jpeg";
   const b64 = fs.readFileSync(filePath).toString("base64");
   return `data:${mime};base64,${b64}`;
-}
-
-// Генерируем видео через Runway
-async function generateVideo(imagePath, prompt, ratio) {
-  const dataUri = makeDataURI(imagePath);
-
-  try {
-    const task = await runway.imageToVideo
-      .create({
-        model: "gen4_turbo",
-        promptImage: dataUri,
-        promptText: prompt,
-        ratio,
-        duration: 5,
-      })
-      .waitForTaskOutput();
-
-    return task.output[0];
-  } catch (err) {
-    if (err instanceof TaskFailedError) {
-      const details = err.taskDetails;
-      console.error("❌ Ошибка генерации:", details);
-
-      if (details.failureCode === "INTERNAL.BAD_OUTPUT.CODE01") {
-        throw new Error("Runway не смог сгенерировать видео. Попробуй другое описание или фото.");
-      }
-
-      throw new Error("Ошибка на стороне модели: " + details.failure);
-    } else {
-      throw err;
-    }
-  }
 }
 
 const DOMAIN = 'https://videomaker-pwn2.onrender.com';
