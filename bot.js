@@ -3,7 +3,7 @@ import RunwayML, { TaskFailedError, APIError } from "@runwayml/sdk";
 import axios from "axios";
 import fs from "fs";
 import path from "path";
-import sizeOf from "image-size";
+import sharp from "sharp";
 import dotenv from "dotenv";
 
 dotenv.config();
@@ -37,34 +37,37 @@ bot.on("photo", async (ctx) => {
 
   const photo = ctx.message.photo.pop();
   const fileLink = await ctx.telegram.getFileLink(photo.file_id);
-  const filePath = path.join(TMP_DIR, `${photo.file_id}.jpg`);
+  const originalPath = path.join(TMP_DIR, `${photo.file_id}_orig.jpg`);
+  const resizedPath = path.join(TMP_DIR, `${photo.file_id}_resized.jpg`);
 
   try {
-    await downloadFile(fileLink.href, filePath);
+    // Скачиваем фото
+    await downloadFile(fileLink.href, originalPath);
 
-    // Проверяем размеры фото и выдаём предупреждение, если слишком маленькое или соотношение не подходит
-    let dimensions;
-    try {
-      dimensions = sizeOf(filePath);
-    } catch (e) {
-      await ctx.reply("⚠️ Не удалось определить размер фотографии. Попробуй другое фото.");
-      throw e;
+    // Проверяем и получаем размеры через sharp
+    const metadata = await sharp(originalPath).metadata();
+    if (!metadata.width || !metadata.height) {
+      await ctx.reply("⚠️ Не удалось определить размеры фотографии. Попробуй другое фото.");
+      throw new Error("Не удалось получить размеры фото");
     }
 
-    const { width, height } = dimensions;
-    if (width < 200 || height < 200) {
+    if (metadata.width < 200 || metadata.height < 200) {
       await ctx.reply("⚠️ Фото слишком маленькое, нужно побольше.");
       throw new Error("Фото слишком маленькое");
     }
 
-    const ratioStr = width > height ? "1280:768" : "768:1280";
+    // Сжимаем фото до ширины 1024px
+    await resizeImage(originalPath, resizedPath);
+
+    // Определяем правильное соотношение сторон для Runway
+    const ratio = metadata.width > metadata.height ? "1280:720" : "720:1280";
 
     await ctx.reply("Генерирую видео, подожди немного…");
 
-    const videoUrl = await generateVideo(filePath, prompt, ratioStr);
+    const videoUrl = await generateVideo(resizedPath, prompt, ratio);
     await ctx.replyWithVideo({ url: videoUrl });
   } catch (err) {
-    console.error(err);
+    console.error("❌ Ошибка:", err);
 
     if (err instanceof TaskFailedError) {
       const details = err.taskDetails;
@@ -74,14 +77,14 @@ bot.on("photo", async (ctx) => {
         await ctx.reply(`⚠️ Ошибка генерации видео: ${details.failure || "неизвестная ошибка"}`);
       }
     } else if (err instanceof APIError && err.body?.error?.includes("ratio")) {
-      await ctx.reply("⚠️ Неподдерживаемое соотношение сторон у фото. Отправь фото с другим размером.");
-    } else if (err.message === "Фото слишком маленькое") {
-      // Уже отправили предупреждение, ничего делать не нужно
+      await ctx.reply("⚠️ Неподдерживаемое соотношение сторон у фото. Отправь фото другого размера.");
+    } else if (err.message === "Фото слишком маленькое" || err.message === "Не удалось получить размеры фото") {
+      // Уже отправлено предупреждение
     } else {
       await ctx.reply("Произошла ошибка при генерации видео 😔");
     }
   } finally {
-    if (fs.existsSync(filePath)) fs.unlinkSync(filePath);
+    [originalPath, resizedPath].forEach((p) => fs.existsSync(p) && fs.unlinkSync(p));
     userPrompts.delete(ctx.chat.id);
   }
 });
@@ -94,6 +97,19 @@ async function downloadFile(url, dest) {
     writer.on("finish", resolve);
     writer.on("error", reject);
   });
+}
+
+async function resizeImage(inputPath, outputPath) {
+  return sharp(inputPath)
+    .resize({ width: 1024 })
+    .jpeg({ quality: 80 })
+    .toFile(outputPath);
+}
+
+function makeDataURI(filePath) {
+  const mime = "image/jpeg";
+  const b64 = fs.readFileSync(filePath).toString("base64");
+  return `data:${mime};base64,${b64}`;
 }
 
 async function generateVideo(imagePath, prompt, ratio) {
@@ -110,12 +126,6 @@ async function generateVideo(imagePath, prompt, ratio) {
     .waitForTaskOutput();
 
   return task.output[0];
-}
-
-function makeDataURI(filePath) {
-  const mime = "image/jpeg";
-  const b64 = fs.readFileSync(filePath).toString("base64");
-  return `data:${mime};base64,${b64}`;
 }
 
 const DOMAIN = 'https://videomaker-pwn2.onrender.com';
