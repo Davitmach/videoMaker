@@ -44,23 +44,34 @@ bot.on("photo", async (ctx) => {
     // Скачиваем фото
     await downloadFile(fileLink.href, originalPath);
 
-    // Проверяем и получаем размеры через sharp
+    // Получаем размеры фото через sharp
     const metadata = await sharp(originalPath).metadata();
     if (!metadata.width || !metadata.height) {
       await ctx.reply("⚠️ Не удалось определить размеры фотографии. Попробуй другое фото.");
       throw new Error("Не удалось получить размеры фото");
     }
 
-    if (metadata.width < 200 || metadata.height < 200) {
-      await ctx.reply("⚠️ Фото слишком маленькое, нужно побольше.");
+    if (metadata.width < 300 || metadata.height < 300) {
+      await ctx.reply("⚠️ Фото слишком маленькое. Рекомендуется фото минимум 300x300 px.");
       throw new Error("Фото слишком маленькое");
     }
 
-    // Сжимаем фото до ширины 1024px
-    await resizeImage(originalPath, resizedPath);
+    // Увеличиваем фото до минимального размера 720px по большей стороне
+    const resizeDimension = 720;
+    const needResize = Math.max(metadata.width, metadata.height) < resizeDimension;
 
-    // Определяем правильное соотношение сторон для Runway
-    const ratio = metadata.width > metadata.height ? "1280:720" : "720:1280";
+    if (needResize) {
+      await sharp(originalPath)
+        .resize({ width: resizeDimension, height: resizeDimension, fit: "inside" })
+        .jpeg({ quality: 85 })
+        .toFile(resizedPath);
+    } else {
+      // Если фото и так достаточно большое, просто копируем
+      fs.copyFileSync(originalPath, resizedPath);
+    }
+
+    // Определяем ratio для Runway
+    const ratio = metadata.width >= metadata.height ? "1280:720" : "720:1280";
 
     await ctx.reply("Генерирую видео, подожди немного…");
 
@@ -72,14 +83,14 @@ bot.on("photo", async (ctx) => {
     if (err instanceof TaskFailedError) {
       const details = err.taskDetails;
       if (details.failureCode === "INTERNAL.BAD_OUTPUT.CODE01") {
-        await ctx.reply("⚠️ Runway не смог сгенерировать видео по этому фото и описанию. Попробуй изменить описание или фото.");
+        await ctx.reply("⚠️ Runway не смог сгенерировать видео с этим фото и описанием. Попробуй другое фото или описание.");
       } else {
         await ctx.reply(`⚠️ Ошибка генерации видео: ${details.failure || "неизвестная ошибка"}`);
       }
     } else if (err instanceof APIError && err.body?.error?.includes("ratio")) {
       await ctx.reply("⚠️ Неподдерживаемое соотношение сторон у фото. Отправь фото другого размера.");
     } else if (err.message === "Фото слишком маленькое" || err.message === "Не удалось получить размеры фото") {
-      // Уже отправлено предупреждение
+      // Предупреждения уже отправлены выше
     } else {
       await ctx.reply("Произошла ошибка при генерации видео 😔");
     }
@@ -97,13 +108,6 @@ async function downloadFile(url, dest) {
     writer.on("finish", resolve);
     writer.on("error", reject);
   });
-}
-
-async function resizeImage(inputPath, outputPath) {
-  return sharp(inputPath)
-    .resize({ width: 1024 })
-    .jpeg({ quality: 80 })
-    .toFile(outputPath);
 }
 
 function makeDataURI(filePath) {
